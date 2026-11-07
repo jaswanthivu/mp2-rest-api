@@ -12,6 +12,7 @@ from data_pipeline import (
     validate_dataframe,
 )
 
+
 from src import (
     DatasetInfo,
     DatasetStorage,
@@ -19,6 +20,7 @@ from src import (
     ProcessConfig,
     ProcessingReport,
     setup_logging,
+    log_requests,
 )
 
 
@@ -26,6 +28,8 @@ setup_logging(verbose=True)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Data Processing API", version="1.0.0")
+app.middleware("http")(log_requests)
+
 storage = DatasetStorage()
 
 
