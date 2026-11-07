@@ -6,7 +6,20 @@ from pathlib import Path
 import pandas as pd
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 
-from src import DatasetInfo, DatasetStorage, HealthResponse, setup_logging
+from data_pipeline import (
+    create_cleaning_report,
+    process_data,
+    validate_dataframe,
+)
+
+from src import (
+    DatasetInfo,
+    DatasetStorage,
+    HealthResponse,
+    ProcessConfig,
+    ProcessingReport,
+    setup_logging,
+)
 
 
 setup_logging(verbose=True)
@@ -91,3 +104,83 @@ def get_dataset(
         "data": records,
         "total_rows": len(df)
     }
+
+@app.post(
+    "/datasets/{dataset_id}/process",
+    response_model=ProcessingReport
+)
+def process_dataset(dataset_id: int, config: ProcessConfig):
+    """Validate and process a stored dataset using MP1 functions."""
+
+    df = storage.get(dataset_id)
+
+    if df is None:
+        logger.warning(f"Dataset not found: {dataset_id}")
+        raise HTTPException(
+            status_code=404,
+            detail="Dataset not found"
+        )
+
+    config_dict = config.model_dump()
+
+    validation = config_dict["validation"]
+    required_columns = validation["required_columns"]
+    numeric_columns = validation["numeric_columns"]
+
+    for column in numeric_columns:
+        if column not in df.columns:
+            logger.warning(f"Numeric column not found: {column}")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Numeric column not found: {column}"
+            )
+
+    try:
+        rows_before_validation = len(df)
+
+        validated_df = validate_dataframe(
+            df,
+            required_columns,
+            numeric_columns
+        )
+
+        validation_rows_removed = (
+            rows_before_validation - len(validated_df)
+        )
+
+        validated_before_processing = validated_df.copy()
+
+        processed_df = process_data(
+            validated_df,
+            config_dict
+        )
+
+        cleaning_report = create_cleaning_report(
+            validated_before_processing,
+            processed_df
+        )
+
+    except ValueError as error:
+        logger.warning(
+            f"Processing failed for dataset {dataset_id}: {error}"
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=str(error)
+        )
+
+    storage.update(dataset_id, processed_df)
+
+    logger.info(
+        f"Processed dataset: id={dataset_id}, "
+        f"validation_removed={validation_rows_removed}, "
+        f"rows_before={cleaning_report['rows_before']}, "
+        f"rows_after={cleaning_report['rows_after']}"
+    )
+
+    return {
+        "id": dataset_id,
+        "validation_rows_removed": validation_rows_removed,
+        "cleaning_report": cleaning_report
+    }
+
